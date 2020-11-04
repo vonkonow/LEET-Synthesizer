@@ -5,10 +5,10 @@
 // The device sends MIDI commands over USB when note keys are pressed
 // (supports simultaneous notes, without ghosting).
 // Uses Arduino pro micro (atMega32U4), WS2812 led strips & 15 keys
-// connected between microcontroller and GND (using weak pull-ups)
+// connected between microcontroller and GND (using weak pull-ups).
 // Latest version, details and build instructions is found on www.vonkonow.com
 //
-// This code is open source under LGPLv2.1
+// This code is open source under MIT License.
 // (attribution is optional, but always appreciated - Johan von Konow ;)
 //
 // History: 2020-10-23
@@ -16,16 +16,19 @@
 // * midichannel is stored in (non volatile) eeprom memory
 // * improved octave and midi-ch visualzation
 // * cleaned up code
+// History: 2020-11-02
+// * updated to MIT license
+// * fixed wheelH
 
 #include <MIDIUSB.h>
 #include <NeoPixelBrightnessBus.h>
 #include <EEPROM.h>
 
-const bool debug = false;                         // true enables serial debugging
-const bool echoLed = true;                        // echo LED without incoming MIDI
+const bool debug = false;                         // <- serial debugging over USB
+const bool echoLed = true;                        // <- echo LED without incoming MIDI
+const bool startAnimation = true;                 // <- show start animation
 const uint8_t ledBrightness = 42;                 // <- LED intensity (0-255)
 const uint8_t noteIntensity = 64;                 // <- MIDI note volume (0-127)
-const uint16_t fadeTime = 600;                    // fade time [ms] after status display
 const uint8_t maxLeds = 13;
 const uint8_t maxNotes = 12;
 const uint8_t maxKeys = 15;
@@ -64,11 +67,12 @@ void setup() {
 
   strip.Begin();
   strip.SetBrightness(ledBrightness);
-  showLedAnimation();                             // <- remove to disable startup led animation
+  if (startAnimation == true)
+    showLedAnimation();
 }
 
 void loop() {
-  checkKeys();                                    // pressed notes are stored in pressedNotes
+  checkKeys();                                    // notes to send are stored in pressedNotes
   playNotes();                                    // send MIDI notes (if user input)
   checkMidi();                                    // check incoming MIDI and update corresponding LEDs
 }
@@ -92,7 +96,7 @@ void playNotes() {
         MidiUSB.sendMIDI({0x09, 0x90 | midiCh , note, noteIntensity});
         MidiUSB.flush();
         if (echoLed == true) {
-          strip.SetPixelColor(noteLedMap[i], WheelH(map(note, 0, 128, 0, 767)));
+          strip.SetPixelColor(noteLedMap[i], wheelH(map(note, 0, 128, 0, 767)));
           strip.Show();
         }
         if (debug == true) {
@@ -103,7 +107,7 @@ void playNotes() {
         }
       } else {
         bitWrite(previousNotes, i , 0);
-        MidiUSB.sendMIDI({0x08, 0x80 | midiCh , note, noteIntensity});
+        MidiUSB.sendMIDI({0x08, 0x80 | midiCh , note, 0});
         MidiUSB.flush();
         if (echoLed == true) {
           strip.SetPixelColor(noteLedMap[i], RgbColor(0, 0, 0));
@@ -126,10 +130,10 @@ void checkMidi() {
     rx = MidiUSB.read();
     if (rx.header != 0) {
       if (rx.byte1 == (0x90 | midiCh)) {            // tone on
-        strip.SetPixelColor(noteLedMap[rx.byte2 % 12], WheelH(map(rx.byte2, 0, 128, 0, 767)));
+        strip.SetPixelColor(noteLedMap[(rx.byte2 - 0) % 12], wheelH(map(rx.byte2, 0, 128, 0, 767)));     // replace 0 with 4 if using sunvox MIDI echo...
         strip.Show();
       } else if (rx.byte1 == (0x80 | midiCh)) {     // tone off
-        strip.SetPixelColor(noteLedMap[rx.byte2 % 12], RgbColor(0, 0, 0));
+        strip.SetPixelColor(noteLedMap[(rx.byte2 - 0) % 12], RgbColor(0, 0, 0));   // replace 0 with 4 if using sunvox MIDI echo...
         strip.Show();
       }
       if (debug == true) {
@@ -186,18 +190,18 @@ void checkMidiCh() {
       }
       delay(20);
     }
-    fadeLeds = true;
   }
 }
 
 void showMidiCh() {
   for (uint8_t i = 0; i < maxLeds; i++) {
     if (i <= midiCh)
-      strip.SetPixelColor(statusLedMap[i], WheelH(map(i, 0, 16, 0, 767)));
+      strip.SetPixelColor(statusLedMap[i], wheelH(map(i, 0, 16, 0, 767)));
     else
       strip.SetPixelColor(statusLedMap[i], RgbColor(0, 0, 0));
     strip.Show();
   }
+  fadeLeds = true;
 }
 
 void checkOctave() {
@@ -208,7 +212,6 @@ void checkOctave() {
     showOctave();
     while (digitalRead(keyOctUpPin) == 0)
       delay(20);
-    fadeLeds = true;
   }
 
   // Octave Down
@@ -218,18 +221,18 @@ void checkOctave() {
     showOctave();
     while (digitalRead(keyOctDownPin) == 0)
       delay(20);
-    fadeLeds = true;
   }
 }
 
 void showOctave() {
   for (uint8_t i = 0; i < maxLeds; i++) {
     if (i <= octave)
-      strip.SetPixelColor(statusLedMap[i], WheelH(map(i * 12, 0, 128, 0, 767)));
+      strip.SetPixelColor(statusLedMap[i], wheelH(map(i * 12, 0, 128, 0, 767)));
     else
       strip.SetPixelColor(statusLedMap[i], RgbColor(0, 0, 0));
     strip.Show();
   }
+  fadeLeds = true;
 }
 
 void fadeStatusLeds() {
@@ -245,10 +248,6 @@ void fadeStatusLeds() {
   strip.Show();
 }
 
-void darkenLED(uint8_t pos, uint8_t dark) {
-
-}
-
 void clearLED() {
   for (uint8_t i = 0; i < maxLeds; i++) {
     strip.SetPixelColor(i, RgbColor(0, 0, 0));
@@ -262,30 +261,24 @@ void showLedAnimation() {
       float intensity = (float(j / 10) - i) / 10;
       if (intensity < 0) intensity = 1;           // wait until your turn
       if (intensity > 1) intensity = 1;           // stay off
-      strip.SetPixelColor(i, RgbColor::LinearBlend(WheelH(i * 90), RgbColor(0, 0, 0), intensity));
+      strip.SetPixelColor(i, RgbColor::LinearBlend(wheelH(i * 90), RgbColor(0, 0, 0), intensity));
     }
     strip.Show();
     delay(5);
   }
 }
 
-RgbColor WheelH(int WheelPos) {                   // Input 0 to 767 to get a color value of rainbow
-  while ( WheelPos < 0) {
-    WheelPos += 767;
-  }
-  while ( WheelPos > 767) {
-    WheelPos -= 767;
-  }
-  WheelPos = 767 - WheelPos;
-  if (WheelPos < 256) {
-    return RgbColor((255 - WheelPos), 0, WheelPos);
-  }
-  if (WheelPos < 512) {
-    WheelPos -= 256;
-    return RgbColor(0, WheelPos, (255 - WheelPos));
-  }
-  WheelPos -= 512;
-  return RgbColor(WheelPos, (255 - WheelPos), 0);
+// Input a value 0 to 767 to get corresponding rainbow color
+RgbColor wheelH(int wheelPos) {
+  while ( wheelPos < 0)
+    wheelPos += 768;
+  while ( wheelPos >= 768)
+    wheelPos -= 768;
+  if (wheelPos >= 512)
+    return RgbColor(wheelPos - 512, 0, 767 - wheelPos);
+  if (wheelPos >= 256)
+    return RgbColor(0, 511 - wheelPos, wheelPos - 256);
+  return RgbColor(255 - wheelPos, wheelPos, 0);
 }
 
 //-----10|-------20|-------30|-------40|-------50|-------60|-------70|-------80|
