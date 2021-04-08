@@ -45,6 +45,7 @@ uint8_t midiCh;                                   // loaded from EEPROM at start
 uint16_t pressedNotes = 0x00;
 uint16_t previousNotes = 0x00;
 bool fadeLeds = false;
+uint8_t pressed[maxNotes] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 NeoPixelBrightnessBus<NeoGrbFeature, Neo800KbpsMethod> strip(maxLeds, ledPin);
 
@@ -90,8 +91,9 @@ void checkKeys() {
 void playNotes() {
   for (uint8_t i = 0; i < maxNotes; i++) {
     if (bitRead(pressedNotes, i) != bitRead(previousNotes, i)) {
-      uint8_t note = i + 12 * octave;
       if (bitRead(pressedNotes, i)) {
+        uint8_t note = i + 12 * octave;
+        pressed[i] = note;
         bitWrite(previousNotes, i , 1);
         MidiUSB.sendMIDI({0x09, 0x90 | midiCh , note, noteIntensity});
         MidiUSB.flush();
@@ -106,6 +108,7 @@ void playNotes() {
           Serial.println(note, HEX);
         }
       } else {
+        uint8_t note = pressed[i];
         bitWrite(previousNotes, i , 0);
         MidiUSB.sendMIDI({0x08, 0x80 | midiCh , note, 0});
         MidiUSB.flush();
