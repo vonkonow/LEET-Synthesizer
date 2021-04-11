@@ -19,10 +19,18 @@
 // History: 2020-11-02
 // * updated to MIT license
 // * fixed wheelH
+// History: 2021-04-11
+// * fix note release while changing octave
+// * support MIDI thru
 
-#include <MIDIUSB.h>
+#include <USB-MIDI.h>
+#include <MIDI.h>
 #include <NeoPixelBrightnessBus.h>
 #include <EEPROM.h>
+
+// Configure serial devices
+USBMIDI_CREATE_INSTANCE(0, MIDI);
+MIDI_CREATE_INSTANCE(HardwareSerial, Serial1,    THRU);
 
 const bool debug = false;                         // <- serial debugging over USB
 const bool echoLed = true;                        // <- echo LED without incoming MIDI
@@ -41,10 +49,11 @@ const uint8_t noteLedMap[maxNotes]   = {6, 7, 5, 8, 4, 3, 10, 2, 11, 1, 12, 0};
 const uint8_t statusLedMap[maxLeds] = {6, 5, 4, 3, 2, 1, 0, 7, 8, 9, 10, 11, 12};
 
 uint8_t octave = 4;                               // <- start octave
-uint8_t midiCh;                                   // loaded from EEPROM at startup
+midi::Channel midiCh;                             // loaded from EEPROM at startup
 uint16_t pressedNotes = 0x00;
 uint16_t previousNotes = 0x00;
 bool fadeLeds = false;
+midi::DataByte pressed[maxNotes] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 NeoPixelBrightnessBus<NeoGrbFeature, Neo800KbpsMethod> strip(maxLeds, ledPin);
 
@@ -69,6 +78,9 @@ void setup() {
   strip.SetBrightness(ledBrightness);
   if (startAnimation == true)
     showLedAnimation();
+
+  MIDI.begin(MIDI_CHANNEL_OMNI);  // Listen to all incoming messages
+  THRU.begin(MIDI_CHANNEL_OMNI);  // Listen to all incoming messages
 }
 
 void loop() {
@@ -87,28 +99,31 @@ void checkKeys() {
     fadeStatusLeds();
 }
 
+void midiSend(midi::MidiType type, midi::DataByte note, midi::DataByte velocity, midi::Channel ch) {
+  MIDI.send(type, note, velocity, ch);
+  THRU.send(type, note, velocity, ch);
+}
+
 void playNotes() {
   for (uint8_t i = 0; i < maxNotes; i++) {
     if (bitRead(pressedNotes, i) != bitRead(previousNotes, i)) {
-      uint8_t note = i + 12 * octave;
       if (bitRead(pressedNotes, i)) {
+        pressed[i] = i + 12 * octave;
         bitWrite(previousNotes, i , 1);
-        MidiUSB.sendMIDI({0x09, 0x90 | midiCh , note, noteIntensity});
-        MidiUSB.flush();
+        midiSend(midi::NoteOn, pressed[i], noteIntensity, midiCh);
         if (echoLed == true) {
-          strip.SetPixelColor(noteLedMap[i], wheelH(map(note, 0, 128, 0, 767)));
+          strip.SetPixelColor(noteLedMap[i], wheelH(map(pressed[i], 0, 128, 0, 767)));
           strip.Show();
         }
         if (debug == true) {
           Serial.print(F("NoteOn Ch:"));
           Serial.print(midiCh);
           Serial.print(F(" Note:"));
-          Serial.println(note, HEX);
+          Serial.println(pressed[i], HEX);
         }
       } else {
         bitWrite(previousNotes, i , 0);
-        MidiUSB.sendMIDI({0x08, 0x80 | midiCh , note, 0});
-        MidiUSB.flush();
+        midiSend(midi::NoteOff, pressed[i], 0, midiCh);
         if (echoLed == true) {
           strip.SetPixelColor(noteLedMap[i], RgbColor(0, 0, 0));
           strip.Show();
@@ -117,7 +132,7 @@ void playNotes() {
           Serial.print(F("NoteOff Ch:"));
           Serial.print(midiCh);
           Serial.print(F(" Note:"));
-          Serial.println(note, HEX);
+          Serial.println(pressed[i], HEX);
         }
       }
     }
@@ -125,38 +140,65 @@ void playNotes() {
 }
 
 void checkMidi() {
-  midiEventPacket_t rx;
-  do {
-    rx = MidiUSB.read();
-    if (rx.header != 0) {
-      if (rx.byte1 == (0x90 | midiCh)) {            // tone on
-        strip.SetPixelColor(noteLedMap[(rx.byte2 - 0) % 12], wheelH(map(rx.byte2, 0, 128, 0, 767)));     // replace 0 with 4 if using sunvox MIDI echo...
+  // Forward THRU -> USB
+  while (THRU.read()) {
+    MIDI.send(THRU.getType(),
+              THRU.getData1(),
+              THRU.getData2(),
+              THRU.getChannel());
+
+    switch (THRU.getType()) {
+      case midi::NoteOn:
+        strip.SetPixelColor(noteLedMap[THRU.getData1() % 12], wheelH(map(THRU.getData2(), 0, 128, 0, 767)));     // replace 0 with 4 if using sunvox MIDI echo...
         strip.Show();
-      } else if (rx.byte1 == (0x80 | midiCh)) {     // tone off
-        strip.SetPixelColor(noteLedMap[(rx.byte2 - 0) % 12], RgbColor(0, 0, 0));   // replace 0 with 4 if using sunvox MIDI echo...
+        break;
+      case midi::NoteOff:
+        strip.SetPixelColor(noteLedMap[THRU.getData1() % 12], RgbColor(0, 0, 0));   // replace 0 with 4 if using sunvox MIDI echo...
         strip.Show();
-      }
-      if (debug == true) {
-        Serial.print(F("Received: "));
-        Serial.print(rx.header, HEX);
-        Serial.print("-");
-        Serial.print(rx.byte1, HEX);
-        Serial.print("-");
-        Serial.print(rx.byte2, HEX);
-        Serial.print("-");
-        Serial.println(rx.byte3, HEX);
-      }
+        break;
     }
-  } while (rx.header != 0);
+
+    if (debug == true) {
+      Serial.print(F("Received: "));
+      Serial.print(THRU.getType(), HEX);
+      Serial.print("-");
+      Serial.print(THRU.getData1(), HEX);
+      Serial.print("-");
+      Serial.print(THRU.getData2(), HEX);
+      Serial.print("-");
+      Serial.println(THRU.getChannel(), HEX);
+    }
+  }
+
+  // Update LEDs for MIDI received from USB
+  while (MIDI.read()) {
+    switch (MIDI.getType()) {
+      case midi::NoteOn:
+        strip.SetPixelColor(noteLedMap[THRU.getData1() % 12], wheelH(map(THRU.getData2(), 0, 128, 0, 767)));     // replace 0 with 4 if using sunvox MIDI echo...
+        strip.Show();
+        break;
+      case midi::NoteOff:
+        strip.SetPixelColor(noteLedMap[THRU.getData1() % 12], RgbColor(0, 0, 0));   // replace 0 with 4 if using sunvox MIDI echo...
+        strip.Show();
+        break;
+    }
+
+    if (debug == true) {
+      Serial.print(F("Received: "));
+      Serial.print(THRU.getType(), HEX);
+      Serial.print("-");
+      Serial.print(THRU.getData1(), HEX);
+      Serial.print("-");
+      Serial.print(THRU.getData2(), HEX);
+      Serial.print("-");
+      Serial.println(THRU.getChannel(), HEX);
+    }
+  }
 }
 
 void checkNotes() {
   for (uint8_t i = 0; i < maxNotes; i++) {
     if (digitalRead(keyMap[i]) == LOW) {
-      if (debug == true) {
-        Serial.print(F("Pressed: "));
-        Serial.println(i, HEX);
-      }
       bitWrite(pressedNotes, i, 1);
     } else
       bitWrite(pressedNotes, i, 0);
